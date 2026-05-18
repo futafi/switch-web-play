@@ -19,7 +19,7 @@ services:
       ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=12000 key-int-max=30
       ! h264parse
       ! rtspclientsink location=rtsp://127.0.0.1:8554/cam name=sink
-      alsasrc device=hw:2,0
+      alsasrc device=hw:MS2109,0
       ! audioconvert ! audioresample
       ! opusenc bitrate=128000 frame-size=10
       ! sink.
