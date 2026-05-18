@@ -32,7 +32,7 @@ var upgrader = websocket.Upgrader{
 func main() {
 	device := flag.String("device", "/dev/ttyUSB0", "serial device path")
 	baud := flag.Int("baud", 115200, "baud rate")
-	addr := flag.String("addr", ":8080", "listen address")
+	addr := flag.String("addr", ":9000", "listen address")
 	flag.Parse()
 
 	ctrl, err := nxmc.Open(*device, *baud)
