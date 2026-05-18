@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 .env
 dist/
+nxmc/nxmc-test
+nxmc/nxmc-server
