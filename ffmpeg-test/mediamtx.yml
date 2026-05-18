@@ -1,0 +1,17 @@
+logLevel: info
+logDestinations: [stdout]
+
+webrtc: true
+webrtcAddress: :8889
+webrtcAllowOrigins: ['*']
+
+rtsp: true
+rtspAddress: :8554
+
+hls: false
+srt: false
+rtmp: false
+
+paths:
+  cam:
+    source: publisher

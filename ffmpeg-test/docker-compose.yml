@@ -1,0 +1,24 @@
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    network_mode: host
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml
+    restart: unless-stopped
+
+  ffmpeg:
+    image: linuxserver/ffmpeg:latest
+    network_mode: host
+    devices:
+      - /dev/video0:/dev/video0
+      - /dev/snd:/dev/snd
+    command: >
+      -f v4l2 -input_format mjpeg -video_size 1920x1080 -framerate 30
+      -i /dev/video0
+      -f alsa -i hw:2,0
+      -c:v libx264 -preset ultrafast -tune zerolatency
+      -c:a libopus -b:a 128k
+      -f rtsp rtsp://127.0.0.1:8554/cam
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
