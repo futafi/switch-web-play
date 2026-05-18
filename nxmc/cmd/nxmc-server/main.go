@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"flag"
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"web-switch/nxmc"
@@ -39,7 +44,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer ctrl.Close()
 	log.Printf("serial: %s @ %d", *device, *baud)
 
 	var mu sync.Mutex
@@ -86,6 +90,25 @@ func main() {
 	webContent, _ := fs.Sub(webFS, "web")
 	http.Handle("/", http.FileServer(http.FS(webContent)))
 
+	srv := &http.Server{Addr: *addr}
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sig
+		log.Println("shutting down...")
+		mu.Lock()
+		ctrl.Reset()
+		ctrl.Close()
+		mu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	}()
+
 	log.Printf("listening on %s", *addr)
-	log.Fatal(http.ListenAndServe(*addr, nil))
+	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
 }
