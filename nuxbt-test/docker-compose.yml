@@ -1,0 +1,11 @@
+services:
+  nuxbt:
+    build:
+      context: ..
+      dockerfile: nuxbt-test/Dockerfile
+    privileged: true
+    network_mode: host
+    volumes:
+      - ./bluetooth-state:/var/lib/bluetooth
+    command: ["nuxbt", "-d", "webapp", "--port", "8000"]
+    restart: unless-stopped

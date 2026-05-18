@@ -1,0 +1,15 @@
+*
+
+!ref/
+!ref/nuxbt/
+!ref/nuxbt/**
+
+!nuxbt-test/
+!nuxbt-test/Dockerfile
+!nuxbt-test/entrypoint.sh
+
+ref/nuxbt/.git
+ref/nuxbt/nuxbt/web/client/node_modules
+ref/nuxbt/nuxbt/web/client/dist
+ref/nuxbt/nuxbt/web/static/dist
+ref/nuxbt/nuxbt/web/static/assets
