@@ -3,6 +3,7 @@ logDestinations: [stdout]
 
 webrtc: true
 webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
 webrtcAllowOrigins: ['*']
 
 rtsp: true

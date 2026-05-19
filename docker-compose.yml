@@ -1,14 +1,15 @@
 services:
   mediamtx:
     image: bluenviron/mediamtx:latest
-    network_mode: host
+    ports:
+      - "8889:8889"
+      - "8189:8189/udp"
     volumes:
       - ./streaming/mediamtx.yml:/mediamtx.yml
     restart: unless-stopped
 
   gstreamer:
     image: restreamio/gstreamer:latest-dev
-    network_mode: host
     devices:
       - /dev/video0:/dev/video0
       - /dev/snd:/dev/snd
@@ -18,7 +19,7 @@ services:
       ! jpegdec ! videoconvert
       ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=${BITRATE:-12000} key-int-max=30
       ! h264parse
-      ! rtspclientsink location=rtsp://127.0.0.1:8554/cam name=sink
+      ! rtspclientsink location=rtsp://mediamtx:8554/cam name=sink
       alsasrc device=hw:MS2109,0
       ! audioconvert ! audioresample
       ! opusenc bitrate=128000 frame-size=10
@@ -29,7 +30,8 @@ services:
 
   nxmc:
     build: ./nxmc
-    network_mode: host
+    ports:
+      - "9000:9000"
     devices:
       - /dev/ttyUSB0:/dev/ttyUSB0
     restart: unless-stopped
