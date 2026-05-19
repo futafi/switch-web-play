@@ -6,5 +6,6 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /nxmc-server ./cmd/nxmc-server
 
 FROM alpine:3.20
+RUN apk add --no-cache ffmpeg
 COPY --from=build /nxmc-server /nxmc-server
 ENTRYPOINT ["/nxmc-server"]
