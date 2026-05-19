@@ -1,0 +1,36 @@
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    network_mode: host
+    volumes:
+      - ./streaming/mediamtx.yml:/mediamtx.yml
+    environment:
+      - MTX_WEBRTCIPSFROMINTERFACES=yes
+    restart: unless-stopped
+
+  gstreamer:
+    build:
+      context: ./streaming
+      dockerfile: Dockerfile.gstd
+    network_mode: host
+    devices:
+      - ${VIDEO_DEVICE}:/dev/video0
+      - /dev/snd:/dev/snd
+    environment:
+      - WIDTH=${WIDTH:-1920}
+      - HEIGHT=${HEIGHT:-1080}
+      - BITRATE=${BITRATE:-12000}
+      - AUDIO_DEVICE=${AUDIO_DEVICE}
+      - RTSP_HOST=127.0.0.1
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
+
+  nxmc:
+    build: ./nxmc
+    network_mode: host
+    devices:
+      - ${SERIAL_DEVICE}:/dev/ttyUSB0
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
