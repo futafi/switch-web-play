@@ -6,7 +6,7 @@ GSTD_PID=$!
 sleep 2
 
 PIPELINE="v4l2src device=/dev/video0 \
-! image/jpeg,width=1920,height=1080,framerate=30/1 \
+! capsfilter name=capture caps=image/jpeg,width=1920,height=1080,framerate=30/1 \
 ! jpegdec \
 ! videoconvert \
 ! videoscale \

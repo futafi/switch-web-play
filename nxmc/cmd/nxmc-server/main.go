@@ -39,6 +39,12 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+type streamSettings struct {
+	Width   int `json:"width"`
+	Height  int `json:"height"`
+	Bitrate int `json:"bitrate"`
+}
+
 var buttonMap = map[string]uint16{
 	"A": nxmc.ButtonA, "B": nxmc.ButtonB, "X": nxmc.ButtonX, "Y": nxmc.ButtonY,
 	"L": nxmc.ButtonL, "R": nxmc.ButtonR, "ZL": nxmc.ButtonZL, "ZR": nxmc.ButtonZR,
@@ -53,10 +59,12 @@ var hatMap = map[string]byte{
 	"left": nxmc.HatLeft, "upleft": nxmc.HatUpLeft, "center": nxmc.HatCenter,
 }
 
-func gstdSetProperty(baseURL, element, property, value string) error {
-	u := fmt.Sprintf("%s/pipelines/cam/elements/%s/properties/%s?name=%s",
-		baseURL, element, property, url.QueryEscape(value))
-	req, err := http.NewRequest(http.MethodPut, u, nil)
+func gstdDo(ctx context.Context, method, baseURL, path string, params url.Values) error {
+	u := strings.TrimRight(baseURL, "/") + path
+	if len(params) > 0 {
+		u += "?" + params.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, nil)
 	if err != nil {
 		return err
 	}
@@ -65,10 +73,110 @@ func gstdSetProperty(baseURL, element, property, value string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("gstd %s.%s: status %d", element, property, resp.StatusCode)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("gstd %s %s: status %d", method, path, resp.StatusCode)
 	}
 	return nil
+}
+
+func gstdSetProperty(ctx context.Context, baseURL, element, property, value string) error {
+	return gstdDo(ctx, http.MethodPut, baseURL,
+		fmt.Sprintf("/pipelines/cam/elements/%s/properties/%s", element, property),
+		url.Values{"name": {value}},
+	)
+}
+
+func gstdSetState(ctx context.Context, baseURL, state string) error {
+	return gstdDo(ctx, http.MethodPut, baseURL, "/pipelines/cam/state", url.Values{"name": {state}})
+}
+
+func gstdDeletePipeline(ctx context.Context, baseURL string) error {
+	return gstdDo(ctx, http.MethodDelete, baseURL, "/pipelines", url.Values{"name": {"cam"}})
+}
+
+func gstdCreatePipeline(ctx context.Context, baseURL, description string) error {
+	return gstdDo(ctx, http.MethodPost, baseURL, "/pipelines", url.Values{
+		"name":        {"cam"},
+		"description": {description},
+	})
+}
+
+func captureCapsForHeight(height int) string {
+	if height >= 1080 {
+		return "image/jpeg,width=1920,height=1080,framerate=30/1"
+	}
+	return "image/jpeg,width=1280,height=720,framerate=30/1"
+}
+
+func buildPipelineDescription(settings streamSettings, audioDevice, rtspHost string) string {
+	if rtspHost == "" {
+		rtspHost = "mediamtx"
+	}
+
+	audioSrc := "alsasrc"
+	if audioDevice != "" {
+		audioSrc += " device=" + audioDevice
+	}
+
+	return fmt.Sprintf(
+		"v4l2src device=/dev/video0 "+
+			"! capsfilter name=capture caps=%s "+
+			"! jpegdec "+
+			"! videoconvert "+
+			"! videoscale "+
+			"! capsfilter name=scaler caps=video/x-raw,width=%d,height=%d "+
+			"! vaapih265enc name=encoder tune=low-power rate-control=cbr bitrate=%d keyframe-period=30 "+
+			"! h265parse config-interval=1 "+
+			"! rtspclientsink location=rtsp://%s:8554/cam name=sink "+
+			"%s "+
+			"! audioconvert "+
+			"! audioresample "+
+			"! opusenc bitrate=128000 frame-size=10 "+
+			"! sink.",
+		captureCapsForHeight(settings.Height),
+		settings.Width,
+		settings.Height,
+		settings.Bitrate,
+		rtspHost,
+		audioSrc,
+	)
+}
+
+func recreateGstdPipeline(ctx context.Context, baseURL string, settings streamSettings, audioDevice, rtspHost string) error {
+	if err := gstdSetState(ctx, baseURL, "null"); err != nil {
+		return err
+	}
+	if err := gstdDeletePipeline(ctx, baseURL); err != nil {
+		return err
+	}
+	time.Sleep(2 * time.Second)
+	if err := gstdCreatePipeline(ctx, baseURL, buildPipelineDescription(settings, audioDevice, rtspHost)); err != nil {
+		return err
+	}
+	if err := gstdSetState(ctx, baseURL, "playing"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func envInt(name string, fallback int) int {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
+}
+
+func defaultRTSPURL() string {
+	host := os.Getenv("RTSP_HOST")
+	if host == "" {
+		host = "mediamtx"
+	}
+	return fmt.Sprintf("rtsp://%s:8554/cam", host)
 }
 
 func main() {
@@ -76,8 +184,10 @@ func main() {
 	baud := flag.Int("baud", 115200, "baud rate")
 	addr := flag.String("addr", ":9000", "listen address")
 	gstdURL := flag.String("gstd-url", "http://gstreamer:5000", "gstd HTTP API base URL")
-	rtspURL := flag.String("rtsp-url", "rtsp://mediamtx:8554/cam", "RTSP stream URL")
+	rtspURL := flag.String("rtsp-url", defaultRTSPURL(), "RTSP stream URL")
 	flag.Parse()
+	audioDevice := os.Getenv("AUDIO_DEVICE")
+	rtspHost := os.Getenv("RTSP_HOST")
 
 	ctrl, err := nxmc.Open(*device, *baud)
 	if err != nil {
@@ -86,6 +196,12 @@ func main() {
 	log.Printf("serial: %s @ %d", *device, *baud)
 
 	var mu sync.Mutex
+	var streamMu sync.Mutex
+	currentStream := streamSettings{
+		Width:   envInt("WIDTH", 1920),
+		Height:  envInt("HEIGHT", 1080),
+		Bitrate: envInt("BITRATE", 12000),
+	}
 
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -131,26 +247,36 @@ func main() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		var req struct {
-			Width   int `json:"width"`
-			Height  int `json:"height"`
-			Bitrate int `json:"bitrate"`
-		}
+		var req streamSettings
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if req.Width <= 0 || req.Height <= 0 || req.Bitrate <= 0 {
+			http.Error(w, "width, height, and bitrate must be positive", http.StatusBadRequest)
 			return
 		}
 		log.Printf("stream settings: %dx%d @ %d kbps", req.Width, req.Height, req.Bitrate)
 
 		var errs []string
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
 
-		caps := fmt.Sprintf("video/x-raw,width=%d,height=%d", req.Width, req.Height)
-		if err := gstdSetProperty(*gstdURL, "scaler", "caps", caps); err != nil {
-			errs = append(errs, fmt.Sprintf("resolution: %v", err))
+		streamMu.Lock()
+		resolutionChanged := req.Width != currentStream.Width || req.Height != currentStream.Height
+		if resolutionChanged {
+			if err := recreateGstdPipeline(ctx, *gstdURL, req, audioDevice, rtspHost); err != nil {
+				errs = append(errs, fmt.Sprintf("pipeline recreate: %v", err))
+			}
+		} else if req.Bitrate != currentStream.Bitrate {
+			if err := gstdSetProperty(ctx, *gstdURL, "encoder", "bitrate", fmt.Sprintf("%d", req.Bitrate)); err != nil {
+				errs = append(errs, fmt.Sprintf("bitrate: %v", err))
+			}
 		}
-		if err := gstdSetProperty(*gstdURL, "encoder", "bitrate", fmt.Sprintf("%d", req.Bitrate)); err != nil {
-			errs = append(errs, fmt.Sprintf("bitrate: %v", err))
+		if len(errs) == 0 {
+			currentStream = req
 		}
+		streamMu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
 		if len(errs) > 0 {
@@ -158,7 +284,7 @@ func main() {
 			json.NewEncoder(w).Encode(map[string]any{"status": "error", "errors": errs})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "restarted": resolutionChanged})
 	})
 
 	http.HandleFunc("/api/input", func(w http.ResponseWriter, r *http.Request) {

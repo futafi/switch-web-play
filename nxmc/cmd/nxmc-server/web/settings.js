@@ -226,6 +226,11 @@ const Settings = (() => {
       if (!resp.ok) {
         const data = await resp.json().catch(() => null);
         console.error('stream settings failed:', data);
+        return;
+      }
+      const data = await resp.json().catch(() => null);
+      if (data?.restarted) {
+        WHEP.reconnect(video, 1500);
       }
     } catch (e) {
       console.error('stream settings error:', e);
