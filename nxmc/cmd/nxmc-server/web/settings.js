@@ -2,7 +2,7 @@
 
 const Settings = (() => {
   const STORAGE_KEY = 'nxmc-settings';
-  const defaults = { overlay: false, opacity: 50, resolution: '1080', bitrate: '12000' };
+  const defaults = { overlay: false, opacity: 50, volume: 50, resolution: '1080', bitrate: '12000' };
   let current = { ...defaults };
 
   function load() {
@@ -19,14 +19,22 @@ const Settings = (() => {
   function init() {
     load();
 
+    const video = document.getElementById('video');
     const overlayEl = document.getElementById('overlay');
     const panel = document.getElementById('settings-panel');
     const toggle = document.getElementById('settings-toggle');
     const close = document.getElementById('settings-close');
+    const optMute = document.getElementById('opt-mute');
+    const optVolume = document.getElementById('opt-volume');
+    const optVolumeVal = document.getElementById('opt-volume-val');
     const optOverlay = document.getElementById('opt-overlay');
     const optOpacity = document.getElementById('opt-opacity');
     const optOpacityVal = document.getElementById('opt-opacity-val');
 
+    optVolume.value = current.volume;
+    optVolumeVal.textContent = current.volume + '%';
+    applyVolume(video);
+    updateMuteIcon(optMute, video);
     optOverlay.checked = current.overlay;
     optOpacity.value = current.opacity;
     optOpacityVal.textContent = current.opacity + '%';
@@ -37,6 +45,22 @@ const Settings = (() => {
 
     toggle.addEventListener('click', () => panel.classList.toggle('hidden'));
     close.addEventListener('click', () => panel.classList.add('hidden'));
+
+    optMute.addEventListener('click', () => {
+      video.muted = !video.muted;
+      updateMuteIcon(optMute, video);
+    });
+
+    optVolume.addEventListener('input', () => {
+      current.volume = parseInt(optVolume.value);
+      optVolumeVal.textContent = current.volume + '%';
+      applyVolume(video);
+      if (current.volume > 0 && video.muted) {
+        video.muted = false;
+        updateMuteIcon(optMute, video);
+      }
+      save();
+    });
 
     optOverlay.addEventListener('change', () => {
       current.overlay = optOverlay.checked;
@@ -173,6 +197,8 @@ const Settings = (() => {
     listenRaf = requestAnimationFrame(pollForButton);
   }
 
+  function applyVolume(v) { v.volume = current.volume / 100; }
+  function updateMuteIcon(btn, v) { btn.textContent = v.muted ? '\u{1F507}' : '\u{1F509}'; }
   function applyOverlay(el) { el.classList.toggle('hidden', !current.overlay); }
   function applyOpacity(el) { el.style.opacity = current.opacity / 100; }
   function applyRadio(name, value) {
