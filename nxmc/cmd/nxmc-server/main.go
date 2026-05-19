@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -43,6 +45,12 @@ type streamSettings struct {
 	Width   int `json:"width"`
 	Height  int `json:"height"`
 	Bitrate int `json:"bitrate"`
+}
+
+type screenshotCache struct {
+	mu        sync.RWMutex
+	jpeg      []byte
+	updatedAt time.Time
 }
 
 var buttonMap = map[string]uint16{
@@ -179,6 +187,164 @@ func defaultRTSPURL() string {
 	return fmt.Sprintf("rtsp://%s:8554/cam", host)
 }
 
+func readJPEGFrame(r *bufio.Reader) ([]byte, error) {
+	for {
+		b, err := r.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+		if b != 0xff {
+			continue
+		}
+		next, err := r.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+		if next == 0xd8 {
+			frame := []byte{0xff, 0xd8}
+			prev := byte(0xd8)
+			for {
+				b, err := r.ReadByte()
+				if err != nil {
+					return nil, err
+				}
+				frame = append(frame, b)
+				if prev == 0xff && b == 0xd9 {
+					return frame, nil
+				}
+				prev = b
+			}
+		}
+	}
+}
+
+func startScreenshotCache(ctx context.Context, rtspURL string, fps int) *screenshotCache {
+	cache := &screenshotCache{}
+	if fps <= 0 {
+		fps = 10
+	}
+
+	go func() {
+		for ctx.Err() == nil {
+			args := []string{
+				"-loglevel", "error",
+				"-threads", "1",
+				"-probesize", "32",
+				"-analyzeduration", "0",
+				"-fflags", "nobuffer",
+				"-rtsp_transport", "tcp",
+				"-i", rtspURL,
+				"-an",
+				"-vf", fmt.Sprintf("fps=%d", fps),
+				"-f", "image2pipe",
+				"-c:v", "mjpeg",
+				"-q:v", "2",
+				"pipe:1",
+			}
+
+			cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+			stdout, err := cmd.StdoutPipe()
+			if err != nil {
+				log.Printf("screenshot cache stdout: %v", err)
+				time.Sleep(time.Second)
+				continue
+			}
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+
+			if err := cmd.Start(); err != nil {
+				log.Printf("screenshot cache start: %v", err)
+				time.Sleep(time.Second)
+				continue
+			}
+
+			reader := bufio.NewReaderSize(stdout, 1<<20)
+			for ctx.Err() == nil {
+				frame, err := readJPEGFrame(reader)
+				if err != nil {
+					log.Printf("screenshot cache read: %v", err)
+					break
+				}
+				cache.mu.Lock()
+				cache.jpeg = frame
+				cache.updatedAt = time.Now()
+				cache.mu.Unlock()
+			}
+
+			if err := cmd.Wait(); err != nil && ctx.Err() == nil {
+				log.Printf("screenshot cache ffmpeg: %v: %s", err, strings.TrimSpace(stderr.String()))
+			}
+			if ctx.Err() == nil {
+				time.Sleep(time.Second)
+			}
+		}
+	}()
+
+	return cache
+}
+
+func (c *screenshotCache) latest(maxAge time.Duration) ([]byte, time.Time, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.jpeg) == 0 || time.Since(c.updatedAt) > maxAge {
+		return nil, time.Time{}, false
+	}
+	frame := append([]byte(nil), c.jpeg...)
+	return frame, c.updatedAt, true
+}
+
+func resizeJPEG(ctx context.Context, jpeg []byte, width, height string) ([]byte, error) {
+	sw, sh := "-1", "-1"
+	if width != "" {
+		sw = width
+	}
+	if height != "" {
+		sh = height
+	}
+
+	cmd := exec.CommandContext(ctx, "ffmpeg",
+		"-loglevel", "error",
+		"-f", "mjpeg",
+		"-i", "pipe:0",
+		"-frames:v", "1",
+		"-vf", fmt.Sprintf("scale=%s:%s", sw, sh),
+		"-f", "image2",
+		"-c:v", "mjpeg",
+		"-q:v", "2",
+		"pipe:1",
+	)
+	cmd.Stdin = bytes.NewReader(jpeg)
+	return cmd.Output()
+}
+
+func captureScreenshotOneShot(ctx context.Context, rtspURL, width, height string) ([]byte, error) {
+	args := []string{
+		"-loglevel", "error",
+		"-threads", "1",
+		"-probesize", "32",
+		"-analyzeduration", "0",
+		"-fflags", "nobuffer",
+		"-rtsp_transport", "tcp",
+		"-skip_frame", "nokey",
+		"-i", rtspURL,
+		"-frames:v", "1",
+	}
+
+	if width != "" || height != "" {
+		sw, sh := "-1", "-1"
+		if width != "" {
+			sw = width
+		}
+		if height != "" {
+			sh = height
+		}
+		args = append(args, "-vf", fmt.Sprintf("scale=%s:%s", sw, sh))
+	}
+
+	args = append(args, "-f", "image2", "-c:v", "mjpeg", "-q:v", "2", "pipe:1")
+	return exec.CommandContext(ctx, "ffmpeg", args...).Output()
+}
+
 func main() {
 	device := flag.String("device", "/dev/ttyUSB0", "serial device path")
 	baud := flag.Int("baud", 115200, "baud rate")
@@ -188,6 +354,8 @@ func main() {
 	flag.Parse()
 	audioDevice := os.Getenv("AUDIO_DEVICE")
 	rtspHost := os.Getenv("RTSP_HOST")
+	appCtx, stopApp := context.WithCancel(context.Background())
+	defer stopApp()
 
 	ctrl, err := nxmc.Open(*device, *baud)
 	if err != nil {
@@ -202,6 +370,7 @@ func main() {
 		Height:  envInt("HEIGHT", 1080),
 		Bitrate: envInt("BITRATE", 12000),
 	}
+	screenshotCache := startScreenshotCache(appCtx, *rtspURL, envInt("SCREENSHOT_CACHE_FPS", 10))
 
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -365,45 +534,36 @@ func main() {
 			return
 		}
 
-		args := []string{
-			"-threads", "1",
-			"-probesize", "32",
-			"-analyzeduration", "0",
-			"-fflags", "nobuffer",
-			"-rtsp_transport", "tcp",
-			"-skip_frame", "nokey",
-			"-i", *rtspURL,
-			"-frames:v", "1",
-		}
-
 		qw := r.URL.Query().Get("width")
 		qh := r.URL.Query().Get("height")
-		if qw != "" || qh != "" {
-			sw, sh := "-1", "-1"
-			if qw != "" {
-				sw = qw
+		frame, updatedAt, ok := screenshotCache.latest(3 * time.Second)
+		if !ok {
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			out, err := captureScreenshotOneShot(ctx, *rtspURL, qw, qh)
+			if err != nil {
+				log.Printf("screenshot fallback error: %v", err)
+				http.Error(w, "screenshot failed", http.StatusInternalServerError)
+				return
 			}
-			if qh != "" {
-				sh = qh
+			frame = out
+		} else if qw != "" || qh != "" {
+			ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+			defer cancel()
+			out, err := resizeJPEG(ctx, frame, qw, qh)
+			if err != nil {
+				log.Printf("screenshot resize error: %v", err)
+				http.Error(w, "screenshot failed", http.StatusInternalServerError)
+				return
 			}
-			args = append(args, "-vf", fmt.Sprintf("scale=%s:%s", sw, sh))
-		}
-
-		args = append(args, "-f", "image2", "-c:v", "mjpeg", "-q:v", "2", "pipe:1")
-
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
-
-		cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-		out, err := cmd.Output()
-		if err != nil {
-			log.Printf("screenshot error: %v", err)
-			http.Error(w, "screenshot failed", http.StatusInternalServerError)
-			return
+			frame = out
 		}
 
 		w.Header().Set("Content-Type", "image/jpeg")
-		w.Write(out)
+		if !updatedAt.IsZero() {
+			w.Header().Set("X-Screenshot-Age-Ms", strconv.FormatInt(time.Since(updatedAt).Milliseconds(), 10))
+		}
+		w.Write(frame)
 	})
 
 	http.HandleFunc("/api/audio", func(w http.ResponseWriter, r *http.Request) {
@@ -456,6 +616,7 @@ func main() {
 	go func() {
 		<-sig
 		log.Println("shutting down...")
+		stopApp()
 		mu.Lock()
 		ctrl.Reset()
 		ctrl.Close()
