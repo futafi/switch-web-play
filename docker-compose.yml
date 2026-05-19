@@ -1,16 +1,19 @@
 services:
   mediamtx:
     image: bluenviron/mediamtx:latest
-    network_mode: host
+    ports:
+      - "8889:8889"
+      - "8189:8189/udp"
     volumes:
       - ./streaming/mediamtx.yml:/mediamtx.yml
+    environment:
+      - MTX_WEBRTCADDITIONALHOSTS=${HOST_IP}
     restart: unless-stopped
 
   gstreamer:
     build:
       context: ./streaming
       dockerfile: Dockerfile.gstd
-    network_mode: host
     devices:
       - ${VIDEO_DEVICE}:/dev/video0
       - /dev/snd:/dev/snd
@@ -25,7 +28,8 @@ services:
 
   nxmc:
     build: ./nxmc
-    network_mode: host
+    ports:
+      - "9000:9000"
     devices:
       - ${SERIAL_DEVICE}:/dev/ttyUSB0
     restart: unless-stopped

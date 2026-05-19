@@ -58,7 +58,7 @@ func main() {
 	device := flag.String("device", "/dev/ttyUSB0", "serial device path")
 	baud := flag.Int("baud", 115200, "baud rate")
 	addr := flag.String("addr", ":9000", "listen address")
-	gstdURL := flag.String("gstd-url", "http://127.0.0.1:5000", "gstd HTTP API base URL")
+	gstdURL := flag.String("gstd-url", "http://gstreamer:5000", "gstd HTTP API base URL")
 	flag.Parse()
 
 	ctrl, err := nxmc.Open(*device, *baud)

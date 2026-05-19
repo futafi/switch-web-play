@@ -13,7 +13,7 @@ PIPELINE="v4l2src device=/dev/video0 \
 ! capsfilter name=scaler caps=video/x-raw,width=${WIDTH:-1920},height=${HEIGHT:-1080} \
 ! x264enc name=encoder tune=zerolatency speed-preset=ultrafast bitrate=${BITRATE:-12000} key-int-max=30 \
 ! h264parse \
-! rtspclientsink location=rtsp://127.0.0.1:8554/cam name=sink \
+! rtspclientsink location=rtsp://mediamtx:8554/cam name=sink \
 alsasrc device=${AUDIO_DEVICE} \
 ! audioconvert \
 ! audioresample \
