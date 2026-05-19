@@ -13,9 +13,10 @@ services:
   gstreamer:
     build:
       context: ./streaming
-      dockerfile: Dockerfile.gstd
+      dockerfile: Dockerfile
     devices:
       - ${VIDEO_DEVICE}:/dev/video0
+      - /dev/dri/renderD128:/dev/dri/renderD128
       - /dev/snd:/dev/snd
     environment:
       - WIDTH=${WIDTH:-1920}
