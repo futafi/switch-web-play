@@ -5,9 +5,11 @@ import (
 	"embed"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -34,10 +36,29 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+func gstdSetProperty(baseURL, element, property, value string) error {
+	u := fmt.Sprintf("%s/pipelines/cam/elements/%s/properties/%s?name=%s",
+		baseURL, element, property, url.QueryEscape(value))
+	req, err := http.NewRequest(http.MethodPut, u, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("gstd %s.%s: status %d", element, property, resp.StatusCode)
+	}
+	return nil
+}
+
 func main() {
 	device := flag.String("device", "/dev/ttyUSB0", "serial device path")
 	baud := flag.Int("baud", 115200, "baud rate")
 	addr := flag.String("addr", ":9000", "listen address")
+	gstdURL := flag.String("gstd-url", "http://127.0.0.1:5000", "gstd HTTP API base URL")
 	flag.Parse()
 
 	ctrl, err := nxmc.Open(*device, *baud)
@@ -87,7 +108,6 @@ func main() {
 		}
 	})
 
-	// Mock stream settings API
 	http.HandleFunc("/api/stream", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -102,9 +122,25 @@ func main() {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		log.Printf("stream settings (mock): %dx%d @ %d kbps", req.Width, req.Height, req.Bitrate)
+		log.Printf("stream settings: %dx%d @ %d kbps", req.Width, req.Height, req.Bitrate)
+
+		var errs []string
+
+		caps := fmt.Sprintf("video/x-raw,width=%d,height=%d", req.Width, req.Height)
+		if err := gstdSetProperty(*gstdURL, "scaler", "caps", caps); err != nil {
+			errs = append(errs, fmt.Sprintf("resolution: %v", err))
+		}
+		if err := gstdSetProperty(*gstdURL, "encoder", "bitrate", fmt.Sprintf("%d", req.Bitrate)); err != nil {
+			errs = append(errs, fmt.Sprintf("bitrate: %v", err))
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok (mock)"})
+		if len(errs) > 0 {
+			w.WriteHeader(http.StatusBadGateway)
+			json.NewEncoder(w).Encode(map[string]any{"status": "error", "errors": errs})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
 	webContent, _ := fs.Sub(webFS, "web")

@@ -191,12 +191,18 @@ const Settings = (() => {
     const res = RESOLUTION_MAP[current.resolution] || RESOLUTION_MAP['1080'];
     const body = { width: res.width, height: res.height, bitrate: parseInt(current.bitrate) };
     try {
-      await fetch('/api/stream', {
+      const resp = await fetch('/api/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-    } catch { /* mock */ }
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => null);
+        console.error('stream settings failed:', data);
+      }
+    } catch (e) {
+      console.error('stream settings error:', e);
+    }
   }
 
   function onGamepadChange(connected) {

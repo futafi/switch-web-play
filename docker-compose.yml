@@ -7,22 +7,18 @@ services:
     restart: unless-stopped
 
   gstreamer:
-    image: restreamio/gstreamer:latest-dev
+    build:
+      context: ./streaming
+      dockerfile: Dockerfile.gstd
     network_mode: host
     devices:
       - ${VIDEO_DEVICE}:/dev/video0
       - /dev/snd:/dev/snd
-    command: >
-      gst-launch-1.0 -v
-      v4l2src device=/dev/video0 ! image/jpeg,width=${WIDTH:-1920},height=${HEIGHT:-1080},framerate=30/1
-      ! jpegdec ! videoconvert
-      ! x264enc tune=zerolatency speed-preset=ultrafast bitrate=${BITRATE:-12000} key-int-max=30
-      ! h264parse
-      ! rtspclientsink location=rtsp://127.0.0.1:8554/cam name=sink
-      alsasrc device=${AUDIO_DEVICE}
-      ! audioconvert ! audioresample
-      ! opusenc bitrate=128000 frame-size=10
-      ! sink.
+    environment:
+      - WIDTH=${WIDTH:-1920}
+      - HEIGHT=${HEIGHT:-1080}
+      - BITRATE=${BITRATE:-12000}
+      - AUDIO_DEVICE=${AUDIO_DEVICE}
     restart: unless-stopped
     depends_on:
       - mediamtx
