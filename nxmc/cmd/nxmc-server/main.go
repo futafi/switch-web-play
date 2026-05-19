@@ -366,6 +366,10 @@ func main() {
 		}
 
 		args := []string{
+			"-threads", "1",
+			"-probesize", "32",
+			"-analyzeduration", "0",
+			"-fflags", "nobuffer",
 			"-rtsp_transport", "tcp",
 			"-i", *rtspURL,
 			"-frames:v", "1",
