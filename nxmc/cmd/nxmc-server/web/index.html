@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>nxmc</title>
+<link rel="manifest" href="manifest.json">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -153,6 +154,7 @@
 
 <div id="status-indicator" class="status-dot disconnected" title="disconnected"></div>
 
+<script>navigator.serviceWorker?.register('sw.js');</script>
 <script src="whep.js"></script>
 <script src="input.js"></script>
 <script src="touch.js"></script>
