@@ -87,6 +87,26 @@ func main() {
 		}
 	})
 
+	// Mock stream settings API
+	http.HandleFunc("/api/stream", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Width   int `json:"width"`
+			Height  int `json:"height"`
+			Bitrate int `json:"bitrate"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		log.Printf("stream settings (mock): %dx%d @ %d kbps", req.Width, req.Height, req.Bitrate)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok (mock)"})
+	})
+
 	webContent, _ := fs.Sub(webFS, "web")
 	http.Handle("/", http.FileServer(http.FS(webContent)))
 
