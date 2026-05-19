@@ -5,6 +5,7 @@ go 1.19
 require (
 	github.com/gorilla/websocket v1.5.1
 	go.bug.st/serial v1.6.1
+	golang.org/x/image v0.18.0
 )
 
 require (

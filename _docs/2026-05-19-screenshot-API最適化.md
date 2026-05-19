@@ -2,8 +2,8 @@
 
 ## 概要
 
-`/api/screenshot` のレイテンシを 960ms → 200ms に改善した後、さらに常駐ffmpegによるJPEGキャッシュ方式へ変更した。
-通常のスクリーンショット取得では、リクエスト時にRTSPへ接続せず、メモリ上の最新JPEGを返す。
+`/api/screenshot` のレイテンシを 960ms → 200ms に改善した後、GStreamerのJPEG分岐から最新JPEGをキャッシュする方式へ変更した。
+通常のスクリーンショット取得では、リクエスト時にRTSPへ接続せず、nxmc-serverのメモリ上にある最新JPEGを返す。
 
 ## 変更内容
 
@@ -37,6 +37,34 @@ ffmpeg
 
 Go側はstdoutからJPEGフレームを読み、最新1枚だけをメモリに保持する。
 
+### 2026-05-20: GStreamer JPEG分岐 + メモリキャッシュ
+
+常駐ffmpeg方式は `/api/screenshot` を高速化できたが、nxmcコンテナでH.265ソフトウェアデコードが常時発生した。これを避けるため、GStreamerパイプラインでエンコード前のraw videoを `tee` で分岐し、スクリーンショット用JPEG streamをTCPでnxmcへ渡す方式に変更した。
+
+GStreamer側:
+
+```
+... ! capsfilter name=scaler caps=video/x-raw,width=W,height=H
+    ! tee name=video_split
+
+video_split. ! queue
+    ! vaapih265enc ! h265parse ! rtspclientsink
+
+video_split. ! queue leaky=downstream max-size-buffers=1
+    ! videorate ! video/x-raw,framerate=${SCREENSHOT_CACHE_FPS:-10}/1
+    ! jpegenc quality=95
+    ! multipartmux boundary=frame
+    ! tcpserversink host=0.0.0.0 port=${SCREENSHOT_STREAM_PORT:-9001} sync=false
+```
+
+nxmc側:
+
+```
+net.Dial("gstreamer:9001")
+  → JPEG streamからSOI/EOIを探して1枚ずつ読み出し
+    → Goメモリ上の最新JPEGを上書き
+```
+
 ```go
 type screenshotCache struct {
     jpeg      []byte
@@ -44,9 +72,9 @@ type screenshotCache struct {
 }
 ```
 
-`SCREENSHOT_CACHE_FPS` のデフォルトは `10`。通常リクエストでは最大およそ100ms前のJPEGを返す想定で、レスポンスヘッダ `X-Screenshot-Age-Ms` にキャッシュの経過時間を入れる。
+`SCREENSHOT_CACHE_FPS` のデフォルトは `10`。通常リクエストでは最大およそ100ms前のJPEGを返す想定で、レスポンスヘッダ `X-Screenshot-Age-Ms` にキャッシュの経過時間を入れる。Docker bridge構成ではnxmcは `gstreamer:9001` に接続する。host network構成では `127.0.0.1:9001` に接続する。明示的に変える場合は `SCREENSHOT_STREAM_ADDR` を使う。
 
-`width` / `height` 指定時は、キャッシュJPEGを入力としてffmpegでリサイズする。キャッシュ未準備または3秒以上更新されていない場合のみ、従来のワンショット取得へフォールバックする。
+`width` / `height` 指定時は、キャッシュJPEGをGo内でdecode/resize/re-encodeする。リサイズには `golang.org/x/image/draw` の `ApproxBiLinear` を使い、JPEG品質は95にしている。キャッシュ未準備または3秒以上更新されていない場合のみ、従来のワンショット取得へフォールバックする。
 
 ## 処理フロー
 
@@ -54,10 +82,9 @@ type screenshotCache struct {
 
 ```
 nxmc-server起動
-  → 常駐ffmpegでRTSP TCP接続
-    → H.265を連続デコード
-      → fps=10でJPEG化
-        → Goメモリ上の最新JPEGを上書き
+  → gstreamer:9001 のJPEG streamへTCP接続
+    → JPEGフレームを読み続ける
+      → Goメモリ上の最新JPEGを上書き
 
 API リクエスト
   → 最新JPEGをメモリからコピー
@@ -75,7 +102,7 @@ API リクエスト
           → pipe経由でHTTPレスポンス
 ```
 
-常駐キャッシュ方式では、通常リクエスト時のffmpegプロセス起動、RTSP接続、keyframe待ちを避ける。代わりに、RTSPクライアントが1つ増え、H.265ソフトウェアデコードとJPEGエンコードが常時発生する。
+GStreamer JPEG分岐方式では、通常リクエスト時のffmpegプロセス起動、RTSP接続、keyframe待ちを避ける。nxmc側でH.265を再デコードせず、JPEG streamを読むだけにする。
 
 ## 最適化前に960msかかっていた原因
 

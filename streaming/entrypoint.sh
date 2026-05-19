@@ -11,6 +11,9 @@ PIPELINE="v4l2src device=/dev/video0 \
 ! videoconvert \
 ! videoscale \
 ! capsfilter name=scaler caps=video/x-raw,width=${WIDTH:-1920},height=${HEIGHT:-1080} \
+! tee name=video_split \
+video_split. \
+! queue \
 ! vaapih265enc name=encoder tune=low-power rate-control=cbr bitrate=${BITRATE:-12000} keyframe-period=30 \
 ! h265parse config-interval=1 \
 ! rtspclientsink location=rtsp://${RTSP_HOST:-mediamtx}:8554/cam name=sink \
@@ -18,7 +21,14 @@ alsasrc device=${AUDIO_DEVICE} \
 ! audioconvert \
 ! audioresample \
 ! opusenc bitrate=128000 frame-size=10 \
-! sink."
+! sink. \
+video_split. \
+! queue leaky=downstream max-size-buffers=1 \
+! videorate \
+! video/x-raw,framerate=${SCREENSHOT_CACHE_FPS:-10}/1 \
+! jpegenc quality=95 \
+! multipartmux boundary=frame \
+! tcpserversink host=0.0.0.0 port=${SCREENSHOT_STREAM_PORT:-9001} sync=false"
 
 curl -sf -X POST -G \
   --data-urlencode "name=cam" \

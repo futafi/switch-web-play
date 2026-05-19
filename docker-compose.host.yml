@@ -23,6 +23,8 @@ services:
       - BITRATE=${BITRATE:-12000}
       - AUDIO_DEVICE=${AUDIO_DEVICE}
       - RTSP_HOST=127.0.0.1
+      - SCREENSHOT_CACHE_FPS=${SCREENSHOT_CACHE_FPS:-10}
+      - SCREENSHOT_STREAM_PORT=${SCREENSHOT_STREAM_PORT:-9001}
     restart: unless-stopped
     depends_on:
       - mediamtx
@@ -38,6 +40,9 @@ services:
       - BITRATE=${BITRATE:-12000}
       - AUDIO_DEVICE=${AUDIO_DEVICE}
       - RTSP_HOST=127.0.0.1
+      - SCREENSHOT_CACHE_FPS=${SCREENSHOT_CACHE_FPS:-10}
+      - SCREENSHOT_STREAM_PORT=${SCREENSHOT_STREAM_PORT:-9001}
+      - SCREENSHOT_STREAM_ADDR=127.0.0.1:${SCREENSHOT_STREAM_PORT:-9001}
     restart: unless-stopped
     depends_on:
       - mediamtx

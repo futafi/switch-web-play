@@ -8,8 +8,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,6 +25,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	xdraw "golang.org/x/image/draw"
 	"web-switch/nxmc"
 )
 
@@ -116,9 +120,15 @@ func captureCapsForHeight(height int) string {
 	return "image/jpeg,width=1280,height=720,framerate=30/1"
 }
 
-func buildPipelineDescription(settings streamSettings, audioDevice, rtspHost string) string {
+func buildPipelineDescription(settings streamSettings, audioDevice, rtspHost string, screenshotFPS, screenshotPort int) string {
 	if rtspHost == "" {
 		rtspHost = "mediamtx"
+	}
+	if screenshotFPS <= 0 {
+		screenshotFPS = 10
+	}
+	if screenshotPort <= 0 {
+		screenshotPort = 9001
 	}
 
 	audioSrc := "alsasrc"
@@ -133,6 +143,9 @@ func buildPipelineDescription(settings streamSettings, audioDevice, rtspHost str
 			"! videoconvert "+
 			"! videoscale "+
 			"! capsfilter name=scaler caps=video/x-raw,width=%d,height=%d "+
+			"! tee name=video_split "+
+			"video_split. "+
+			"! queue "+
 			"! vaapih265enc name=encoder tune=low-power rate-control=cbr bitrate=%d keyframe-period=30 "+
 			"! h265parse config-interval=1 "+
 			"! rtspclientsink location=rtsp://%s:8554/cam name=sink "+
@@ -140,17 +153,26 @@ func buildPipelineDescription(settings streamSettings, audioDevice, rtspHost str
 			"! audioconvert "+
 			"! audioresample "+
 			"! opusenc bitrate=128000 frame-size=10 "+
-			"! sink.",
+			"! sink. "+
+			"video_split. "+
+			"! queue leaky=downstream max-size-buffers=1 "+
+			"! videorate "+
+			"! video/x-raw,framerate=%d/1 "+
+			"! jpegenc quality=95 "+
+			"! multipartmux boundary=frame "+
+			"! tcpserversink host=0.0.0.0 port=%d sync=false",
 		captureCapsForHeight(settings.Height),
 		settings.Width,
 		settings.Height,
 		settings.Bitrate,
 		rtspHost,
 		audioSrc,
+		screenshotFPS,
+		screenshotPort,
 	)
 }
 
-func recreateGstdPipeline(ctx context.Context, baseURL string, settings streamSettings, audioDevice, rtspHost string) error {
+func recreateGstdPipeline(ctx context.Context, baseURL string, settings streamSettings, audioDevice, rtspHost string, screenshotFPS, screenshotPort int) error {
 	if err := gstdSetState(ctx, baseURL, "null"); err != nil {
 		return err
 	}
@@ -158,7 +180,7 @@ func recreateGstdPipeline(ctx context.Context, baseURL string, settings streamSe
 		return err
 	}
 	time.Sleep(2 * time.Second)
-	if err := gstdCreatePipeline(ctx, baseURL, buildPipelineDescription(settings, audioDevice, rtspHost)); err != nil {
+	if err := gstdCreatePipeline(ctx, baseURL, buildPipelineDescription(settings, audioDevice, rtspHost, screenshotFPS, screenshotPort)); err != nil {
 		return err
 	}
 	if err := gstdSetState(ctx, baseURL, "playing"); err != nil {
@@ -185,6 +207,17 @@ func defaultRTSPURL() string {
 		host = "mediamtx"
 	}
 	return fmt.Sprintf("rtsp://%s:8554/cam", host)
+}
+
+func defaultScreenshotStreamAddr() string {
+	if addr := os.Getenv("SCREENSHOT_STREAM_ADDR"); addr != "" {
+		return addr
+	}
+	rtspHost := os.Getenv("RTSP_HOST")
+	if rtspHost == "127.0.0.1" || rtspHost == "localhost" {
+		return "127.0.0.1:9001"
+	}
+	return "gstreamer:9001"
 }
 
 func readJPEGFrame(r *bufio.Reader) ([]byte, error) {
@@ -218,51 +251,24 @@ func readJPEGFrame(r *bufio.Reader) ([]byte, error) {
 	}
 }
 
-func startScreenshotCache(ctx context.Context, rtspURL string, fps int) *screenshotCache {
+func startScreenshotCache(ctx context.Context, streamAddr string) *screenshotCache {
 	cache := &screenshotCache{}
-	if fps <= 0 {
-		fps = 10
-	}
 
 	go func() {
 		for ctx.Err() == nil {
-			args := []string{
-				"-loglevel", "error",
-				"-threads", "1",
-				"-probesize", "32",
-				"-analyzeduration", "0",
-				"-fflags", "nobuffer",
-				"-rtsp_transport", "tcp",
-				"-i", rtspURL,
-				"-an",
-				"-vf", fmt.Sprintf("fps=%d", fps),
-				"-f", "image2pipe",
-				"-c:v", "mjpeg",
-				"-q:v", "2",
-				"pipe:1",
-			}
-
-			cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-			stdout, err := cmd.StdoutPipe()
+			conn, err := net.DialTimeout("tcp", streamAddr, 3*time.Second)
 			if err != nil {
-				log.Printf("screenshot cache stdout: %v", err)
+				log.Printf("screenshot stream connect %s: %v", streamAddr, err)
 				time.Sleep(time.Second)
 				continue
 			}
-			var stderr bytes.Buffer
-			cmd.Stderr = &stderr
+			log.Printf("screenshot stream connected: %s", streamAddr)
 
-			if err := cmd.Start(); err != nil {
-				log.Printf("screenshot cache start: %v", err)
-				time.Sleep(time.Second)
-				continue
-			}
-
-			reader := bufio.NewReaderSize(stdout, 1<<20)
+			reader := bufio.NewReaderSize(conn, 1<<20)
 			for ctx.Err() == nil {
 				frame, err := readJPEGFrame(reader)
 				if err != nil {
-					log.Printf("screenshot cache read: %v", err)
+					log.Printf("screenshot stream read: %v", err)
 					break
 				}
 				cache.mu.Lock()
@@ -271,9 +277,7 @@ func startScreenshotCache(ctx context.Context, rtspURL string, fps int) *screens
 				cache.mu.Unlock()
 			}
 
-			if err := cmd.Wait(); err != nil && ctx.Err() == nil {
-				log.Printf("screenshot cache ffmpeg: %v: %s", err, strings.TrimSpace(stderr.String()))
-			}
+			conn.Close()
 			if ctx.Err() == nil {
 				time.Sleep(time.Second)
 			}
@@ -293,28 +297,65 @@ func (c *screenshotCache) latest(maxAge time.Duration) ([]byte, time.Time, bool)
 	return frame, c.updatedAt, true
 }
 
-func resizeJPEG(ctx context.Context, jpeg []byte, width, height string) ([]byte, error) {
-	sw, sh := "-1", "-1"
-	if width != "" {
-		sw = width
+func maxInt(a, b int) int {
+	if a > b {
+		return a
 	}
-	if height != "" {
-		sh = height
+	return b
+}
+
+func parseResizeDimensions(width, height string, src image.Rectangle) (int, int, error) {
+	srcW := src.Dx()
+	srcH := src.Dy()
+	if srcW <= 0 || srcH <= 0 {
+		return 0, 0, fmt.Errorf("invalid source size")
 	}
 
-	cmd := exec.CommandContext(ctx, "ffmpeg",
-		"-loglevel", "error",
-		"-f", "mjpeg",
-		"-i", "pipe:0",
-		"-frames:v", "1",
-		"-vf", fmt.Sprintf("scale=%s:%s", sw, sh),
-		"-f", "image2",
-		"-c:v", "mjpeg",
-		"-q:v", "2",
-		"pipe:1",
-	)
-	cmd.Stdin = bytes.NewReader(jpeg)
-	return cmd.Output()
+	dstW, dstH := 0, 0
+	var err error
+	if width != "" {
+		dstW, err = strconv.Atoi(width)
+		if err != nil || dstW <= 0 {
+			return 0, 0, fmt.Errorf("invalid width")
+		}
+	}
+	if height != "" {
+		dstH, err = strconv.Atoi(height)
+		if err != nil || dstH <= 0 {
+			return 0, 0, fmt.Errorf("invalid height")
+		}
+	}
+
+	switch {
+	case dstW > 0 && dstH > 0:
+		return dstW, dstH, nil
+	case dstW > 0:
+		return dstW, maxInt(1, dstW*srcH/srcW), nil
+	case dstH > 0:
+		return maxInt(1, dstH*srcW/srcH), dstH, nil
+	default:
+		return srcW, srcH, nil
+	}
+}
+
+func resizeJPEG(jpegData []byte, width, height string) ([]byte, error) {
+	src, err := jpeg.Decode(bytes.NewReader(jpegData))
+	if err != nil {
+		return nil, err
+	}
+
+	dstW, dstH, err := parseResizeDimensions(width, height, src.Bounds())
+	if err != nil {
+		return nil, err
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
+	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), src, src.Bounds(), xdraw.Over, nil)
+
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, dst, &jpeg.Options{Quality: 95}); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
 }
 
 func captureScreenshotOneShot(ctx context.Context, rtspURL, width, height string) ([]byte, error) {
@@ -351,9 +392,12 @@ func main() {
 	addr := flag.String("addr", ":9000", "listen address")
 	gstdURL := flag.String("gstd-url", "http://gstreamer:5000", "gstd HTTP API base URL")
 	rtspURL := flag.String("rtsp-url", defaultRTSPURL(), "RTSP stream URL")
+	screenshotStreamAddr := flag.String("screenshot-stream-addr", defaultScreenshotStreamAddr(), "JPEG screenshot stream address")
 	flag.Parse()
 	audioDevice := os.Getenv("AUDIO_DEVICE")
 	rtspHost := os.Getenv("RTSP_HOST")
+	screenshotFPS := envInt("SCREENSHOT_CACHE_FPS", 10)
+	screenshotPort := envInt("SCREENSHOT_STREAM_PORT", 9001)
 	appCtx, stopApp := context.WithCancel(context.Background())
 	defer stopApp()
 
@@ -370,7 +414,7 @@ func main() {
 		Height:  envInt("HEIGHT", 1080),
 		Bitrate: envInt("BITRATE", 12000),
 	}
-	screenshotCache := startScreenshotCache(appCtx, *rtspURL, envInt("SCREENSHOT_CACHE_FPS", 10))
+	screenshotCache := startScreenshotCache(appCtx, *screenshotStreamAddr)
 
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -434,7 +478,7 @@ func main() {
 		streamMu.Lock()
 		resolutionChanged := req.Width != currentStream.Width || req.Height != currentStream.Height
 		if resolutionChanged {
-			if err := recreateGstdPipeline(ctx, *gstdURL, req, audioDevice, rtspHost); err != nil {
+			if err := recreateGstdPipeline(ctx, *gstdURL, req, audioDevice, rtspHost, screenshotFPS, screenshotPort); err != nil {
 				errs = append(errs, fmt.Sprintf("pipeline recreate: %v", err))
 			}
 		} else if req.Bitrate != currentStream.Bitrate {
@@ -548,9 +592,7 @@ func main() {
 			}
 			frame = out
 		} else if qw != "" || qh != "" {
-			ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-			defer cancel()
-			out, err := resizeJPEG(ctx, frame, qw, qh)
+			out, err := resizeJPEG(frame, qw, qh)
 			if err != nil {
 				log.Printf("screenshot resize error: %v", err)
 				http.Error(w, "screenshot failed", http.StatusInternalServerError)
