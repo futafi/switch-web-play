@@ -371,6 +371,7 @@ func main() {
 			"-analyzeduration", "0",
 			"-fflags", "nobuffer",
 			"-rtsp_transport", "tcp",
+			"-skip_frame", "nokey",
 			"-i", *rtspURL,
 			"-frames:v", "1",
 		}
