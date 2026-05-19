@@ -84,6 +84,7 @@ const Settings = (() => {
 
     initKeyhelpModal();
     initGpMapModal();
+    changeStream();
   }
 
   function initKeyhelpModal() {
