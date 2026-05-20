@@ -6,3 +6,4 @@ __pycache__/
 dist/
 nxmc/nxmc-test
 nxmc/nxmc-server
+nuxbt-test/bluetooth-state/
