@@ -2,7 +2,7 @@
 
 const Settings = (() => {
   const STORAGE_KEY = 'nxmc-settings';
-  const defaults = { overlay: false, opacity: 50, volume: 50, resolution: '1080', bitrate: '12000' };
+  const defaults = { overlay: false, opacity: 50, volume: 50, muted: true, resolution: '1080', bitrate: '12000' };
   let current = { ...defaults };
 
   function load() {
@@ -33,6 +33,7 @@ const Settings = (() => {
 
     optVolume.value = current.volume;
     optVolumeVal.textContent = current.volume + '%';
+    video.muted = current.muted;
     applyVolume(video);
     updateMuteIcon(optMute, video);
     optOverlay.checked = current.overlay;
@@ -48,7 +49,9 @@ const Settings = (() => {
 
     optMute.addEventListener('click', () => {
       video.muted = !video.muted;
+      current.muted = video.muted;
       updateMuteIcon(optMute, video);
+      save();
     });
 
     optVolume.addEventListener('input', () => {
@@ -57,6 +60,7 @@ const Settings = (() => {
       applyVolume(video);
       if (current.volume > 0 && video.muted) {
         video.muted = false;
+        current.muted = false;
         updateMuteIcon(optMute, video);
       }
       save();
