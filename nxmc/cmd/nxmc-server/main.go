@@ -46,9 +46,10 @@ var upgrader = websocket.Upgrader{
 }
 
 type streamSettings struct {
-	Width   int `json:"width"`
-	Height  int `json:"height"`
-	Bitrate int `json:"bitrate"`
+	Width   int    `json:"width"`
+	Height  int    `json:"height"`
+	Bitrate int    `json:"bitrate"`
+	Codec   string `json:"codec"`
 }
 
 type screenshotCache struct {
@@ -120,6 +121,15 @@ func captureCapsForHeight(height int) string {
 	return "image/jpeg,width=1280,height=720,framerate=30/1"
 }
 
+func encoderElements(codec string) (string, string) {
+	if codec == "h264" {
+		return "vaapih264enc name=encoder tune=low-power rate-control=cbr bitrate=%d keyframe-period=30",
+			"h264parse config-interval=1"
+	}
+	return "vaapih265enc name=encoder tune=low-power rate-control=cbr bitrate=%d keyframe-period=30",
+		"h265parse config-interval=1"
+}
+
 func buildPipelineDescription(settings streamSettings, audioDevice, rtspHost string, screenshotFPS, screenshotPort int) string {
 	if rtspHost == "" {
 		rtspHost = "mediamtx"
@@ -136,6 +146,9 @@ func buildPipelineDescription(settings streamSettings, audioDevice, rtspHost str
 		audioSrc += " device=" + audioDevice
 	}
 
+	encTmpl, parser := encoderElements(settings.Codec)
+	enc := fmt.Sprintf(encTmpl, settings.Bitrate)
+
 	return fmt.Sprintf(
 		"v4l2src device=/dev/video0 "+
 			"! capsfilter name=capture caps=%s "+
@@ -146,8 +159,8 @@ func buildPipelineDescription(settings streamSettings, audioDevice, rtspHost str
 			"! tee name=video_split "+
 			"video_split. "+
 			"! queue "+
-			"! vaapih265enc name=encoder tune=low-power rate-control=cbr bitrate=%d keyframe-period=30 "+
-			"! h265parse config-interval=1 "+
+			"! %s "+
+			"! %s "+
 			"! rtspclientsink location=rtsp://%s:8554/cam name=sink "+
 			"%s "+
 			"! audioconvert "+
@@ -164,7 +177,8 @@ func buildPipelineDescription(settings streamSettings, audioDevice, rtspHost str
 		captureCapsForHeight(settings.Height),
 		settings.Width,
 		settings.Height,
-		settings.Bitrate,
+		enc,
+		parser,
 		rtspHost,
 		audioSrc,
 		screenshotFPS,
@@ -413,6 +427,7 @@ func main() {
 		Width:   envInt("WIDTH", 1920),
 		Height:  envInt("HEIGHT", 1080),
 		Bitrate: envInt("BITRATE", 12000),
+		Codec:   "h265",
 	}
 	screenshotCache := startScreenshotCache(appCtx, *screenshotStreamAddr)
 
@@ -469,15 +484,18 @@ func main() {
 			http.Error(w, "width, height, and bitrate must be positive", http.StatusBadRequest)
 			return
 		}
-		log.Printf("stream settings: %dx%d @ %d kbps", req.Width, req.Height, req.Bitrate)
+		if req.Codec == "" {
+			req.Codec = "h265"
+		}
+		log.Printf("stream settings: %dx%d @ %d kbps codec=%s", req.Width, req.Height, req.Bitrate, req.Codec)
 
 		var errs []string
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
 
 		streamMu.Lock()
-		resolutionChanged := req.Width != currentStream.Width || req.Height != currentStream.Height
-		if resolutionChanged {
+		pipelineChanged := req.Width != currentStream.Width || req.Height != currentStream.Height || req.Codec != currentStream.Codec
+		if pipelineChanged {
 			if err := recreateGstdPipeline(ctx, *gstdURL, req, audioDevice, rtspHost, screenshotFPS, screenshotPort); err != nil {
 				errs = append(errs, fmt.Sprintf("pipeline recreate: %v", err))
 			}
@@ -497,7 +515,7 @@ func main() {
 			json.NewEncoder(w).Encode(map[string]any{"status": "error", "errors": errs})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "restarted": resolutionChanged})
+		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "restarted": pipelineChanged})
 	})
 
 	http.HandleFunc("/api/input", func(w http.ResponseWriter, r *http.Request) {

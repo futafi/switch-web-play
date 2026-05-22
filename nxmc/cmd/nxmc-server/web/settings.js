@@ -2,7 +2,7 @@
 
 const Settings = (() => {
   const STORAGE_KEY = 'nxmc-settings';
-  const defaults = { overlay: false, opacity: 50, volume: 50, muted: true, resolution: '1080', bitrate: '12000' };
+  const defaults = { overlay: false, opacity: 50, volume: 50, muted: true, codec: 'h265', resolution: '1080', bitrate: '12000' };
   let current = { ...defaults };
 
   function load() {
@@ -41,6 +41,7 @@ const Settings = (() => {
     optOpacityVal.textContent = current.opacity + '%';
     applyOverlay(overlayEl);
     applyOpacity(overlayEl);
+    applyRadio('codec', current.codec);
     applyRadio('resolution', current.resolution);
     applyRadio('bitrate', current.bitrate);
 
@@ -79,6 +80,9 @@ const Settings = (() => {
       save();
     });
 
+    document.querySelectorAll('input[name="codec"]').forEach(r => {
+      r.addEventListener('change', () => { current.codec = r.value; save(); changeStream(); });
+    });
     document.querySelectorAll('input[name="resolution"]').forEach(r => {
       r.addEventListener('change', () => { current.resolution = r.value; save(); changeStream(); });
     });
@@ -220,7 +224,7 @@ const Settings = (() => {
 
   async function changeStream() {
     const res = RESOLUTION_MAP[current.resolution] || RESOLUTION_MAP['1080'];
-    const body = { width: res.width, height: res.height, bitrate: parseInt(current.bitrate) };
+    const body = { width: res.width, height: res.height, bitrate: parseInt(current.bitrate), codec: current.codec };
     try {
       const resp = await fetch('/api/stream', {
         method: 'POST',
