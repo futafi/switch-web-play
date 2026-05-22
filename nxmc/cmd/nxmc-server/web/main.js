@@ -21,6 +21,30 @@
     };
   }
 
+  // Auto-hide gear & status in fullscreen
+  const chrome = [document.getElementById('settings-toggle'), document.getElementById('status-indicator')];
+  let hideTimer = null;
+
+  function showChrome() {
+    chrome.forEach(el => el.classList.remove('chrome-hidden'));
+    clearTimeout(hideTimer);
+    if (document.fullscreenElement) {
+      hideTimer = setTimeout(() => chrome.forEach(el => el.classList.add('chrome-hidden')), 3000);
+    }
+  }
+
+  document.addEventListener('fullscreenchange', () => {
+    if (document.fullscreenElement) {
+      showChrome();
+    } else {
+      clearTimeout(hideTimer);
+      chrome.forEach(el => el.classList.remove('chrome-hidden'));
+    }
+  });
+
+  document.addEventListener('mousemove', showChrome);
+  document.addEventListener('touchstart', showChrome);
+
   // Double-tap/click fullscreen
   let lastTap = 0;
   video.addEventListener('dblclick', toggleFullscreen);
