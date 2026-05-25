@@ -59,7 +59,7 @@ const WHEP = (() => {
     const offer = await nextPc.createOffer();
     await nextPc.setLocalDescription(offer);
 
-    const whepUrl = `${location.protocol}//${location.hostname}:8889/cam/whep`;
+    const whepUrl = `${location.origin}/cam/whep`;
     const res = await fetch(whepUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/sdp' },

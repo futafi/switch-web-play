@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/exec"
@@ -671,6 +672,12 @@ func main() {
 
 		w.Header().Set("Content-Type", "audio/wav")
 		w.Write(out)
+	})
+
+	mediamtxURL, _ := url.Parse("http://mediamtx:8889")
+	mediamtxProxy := httputil.NewSingleHostReverseProxy(mediamtxURL)
+	http.HandleFunc("/cam/", func(w http.ResponseWriter, r *http.Request) {
+		mediamtxProxy.ServeHTTP(w, r)
 	})
 
 	webContent, _ := fs.Sub(webFS, "web")
