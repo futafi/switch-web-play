@@ -471,6 +471,14 @@ func main() {
 	})
 
 	http.HandleFunc("/api/stream", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			streamMu.Lock()
+			s := currentStream
+			streamMu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(s)
+			return
+		}
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return

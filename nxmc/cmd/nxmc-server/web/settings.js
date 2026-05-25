@@ -16,8 +16,36 @@ const Settings = (() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(current));
   }
 
-  function init() {
+  const REVERSE_RESOLUTION_MAP = {
+    '1920x1080': '1080', '1280x720': '720', '854x480': '480', '640x360': '360',
+  };
+
+  async function fetchServerSettings() {
+    try {
+      const resp = await fetch('/api/stream');
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      const resKey = `${data.width}x${data.height}`;
+      return {
+        codec: data.codec || 'h265',
+        resolution: REVERSE_RESOLUTION_MAP[resKey] || '1080',
+        bitrate: String(data.bitrate || 12000),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async function init() {
     load();
+
+    const serverSettings = await fetchServerSettings();
+    if (serverSettings) {
+      current.codec = serverSettings.codec;
+      current.resolution = serverSettings.resolution;
+      current.bitrate = serverSettings.bitrate;
+      save();
+    }
 
     const video = document.getElementById('video');
     const overlayEl = document.getElementById('overlay');
@@ -92,7 +120,6 @@ const Settings = (() => {
 
     initKeyhelpModal();
     initGpMapModal();
-    changeStream();
   }
 
   function initKeyhelpModal() {
